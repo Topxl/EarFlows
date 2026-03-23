@@ -23,11 +23,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
@@ -61,7 +66,8 @@ import com.earflows.app.viewmodel.MainViewModel
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    onNavigateToDebug: () -> Unit = {}
 ) {
     val serviceState by viewModel.serviceState.collectAsState()
     val isPaused by viewModel.isPaused.collectAsState()
@@ -71,6 +77,7 @@ fun HomeScreen(
     val useCloud by viewModel.useCloud.collectAsState()
     val sourceLang by viewModel.sourceLang.collectAsState()
     val targetLang by viewModel.targetLang.collectAsState()
+    val isReplyMode by viewModel.isReplyMode.collectAsState()
 
     val isRunning = serviceState == ServiceState.RUNNING
 
@@ -85,6 +92,9 @@ fun HomeScreen(
                     )
                 },
                 actions = {
+                    IconButton(onClick = onNavigateToDebug) {
+                        Icon(Icons.Default.BugReport, contentDescription = "Debug")
+                    }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -117,17 +127,41 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Audio routing indicators + controls (only when running)
+            if (isRunning) {
+                val useBtMic by viewModel.useBtMic.collectAsState()
+
+                // Mic source toggle (independent)
+                MicSourceToggle(
+                    useBtMic = useBtMic,
+                    onToggle = { viewModel.setUseBtMic(!useBtMic) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Reply mode toggle
+                AudioRoutingCard(
+                    isReplyMode = isReplyMode,
+                    onToggleReply = { viewModel.setReplyMode(!isReplyMode) }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             // Status text
             Text(
-                text = when (serviceState) {
-                    ServiceState.STOPPED -> "Appuyez pour commencer"
-                    ServiceState.STARTING -> "Initialisation..."
-                    ServiceState.RUNNING -> if (isPaused) "En pause" else if (isVadActive) "Voix detectee — traduction..." else "Ecoute en cours..."
-                    ServiceState.STOPPING -> "Arret en cours..."
-                    ServiceState.ERROR -> "Erreur — verifiez les permissions"
+                text = when {
+                    serviceState == ServiceState.STOPPED -> "Appuyez pour commencer"
+                    serviceState == ServiceState.STARTING -> "Initialisation..."
+                    isReplyMode -> "Parlez en francais dans les ecouteurs"
+                    serviceState == ServiceState.RUNNING && isPaused -> "En pause"
+                    serviceState == ServiceState.RUNNING && isVadActive -> "Voix detectee — traduction..."
+                    serviceState == ServiceState.RUNNING -> "Ecoute en cours..."
+                    serviceState == ServiceState.STOPPING -> "Arret en cours..."
+                    serviceState == ServiceState.ERROR -> "Erreur — verifiez les permissions"
+                    else -> ""
                 },
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (isReplyMode) Color(0xFFFD79A8) else MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -156,6 +190,149 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier.padding(bottom = 16.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun MicSourceToggle(
+    useBtMic: Boolean,
+    onToggle: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Current mic icon
+            Icon(
+                imageVector = if (useBtMic) Icons.Default.Bluetooth else Icons.Default.Mic,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = if (useBtMic) Color(0xFF0984E3) else Color(0xFF00B894)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Source micro",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    if (useBtMic) "Ecouteurs Bluetooth" else "Telephone",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            // Toggle switch
+            Switch(
+                checked = useBtMic,
+                onCheckedChange = { onToggle() },
+                thumbContent = {
+                    Icon(
+                        imageVector = if (useBtMic) Icons.Default.Bluetooth else Icons.Default.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioRoutingCard(
+    isReplyMode: Boolean,
+    onToggleReply: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isReplyMode)
+                Color(0xFFFD79A8).copy(alpha = 0.15f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Input row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Mic source icon
+                Icon(
+                    imageVector = if (isReplyMode) Icons.Default.Bluetooth else Icons.Default.Mic,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = if (isReplyMode) Color(0xFF0984E3) else Color(0xFF00B894)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Entree",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        if (isReplyMode) "Micro ecouteurs BT" else "Micro telephone",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                // Arrow
+                Text("→", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                // Output icon
+                Icon(
+                    imageVector = if (isReplyMode) Icons.Default.PhoneAndroid else Icons.Default.Bluetooth,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = if (isReplyMode) Color(0xFFE17055) else Color(0xFF0984E3)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        "Sortie",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        if (isReplyMode) "Haut-parleur tel." else "Ecouteurs BT",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Toggle button
+            androidx.compose.material3.FilledTonalButton(
+                onClick = onToggleReply,
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                    containerColor = if (isReplyMode) Color(0xFFFD79A8).copy(alpha = 0.3f)
+                    else MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SwapHoriz,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    if (isReplyMode) "Retour mode ambiant" else "Mode reponse (parler en francais)"
+                )
+            }
         }
     }
 }
@@ -287,7 +464,7 @@ private fun CloudToggleCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (useCloud) "Cloud (ultra-rapide)" else "Local (offline)",
+                        text = if (useCloud) "Cloud (OpenRouter)" else "Local (offline)",
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }

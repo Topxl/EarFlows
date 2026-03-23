@@ -32,9 +32,12 @@ class TranslationManager(
         private const val TAG = "TranslationManager"
     }
 
-    private var localEngine: TranslationEngine? = null  // SeamlessStreaming or Cascade
+    private var localEngine: TranslationEngine? = null
     private var cloudEngine: CloudTranslationEngine? = null
     private var activeEngine: TranslationEngine? = null
+
+    // Mic source override — set by service
+    var forceBtMic = false
 
     private val _activeEngineName = MutableStateFlow("Initializing...")
     val activeEngineName = _activeEngineName.asStateFlow()
@@ -74,33 +77,23 @@ class TranslationManager(
      * Initialize the appropriate engine based on user preferences and connectivity.
      */
     suspend fun initialize(sourceLang: String, targetLang: String): Boolean {
+        // Always initialize local engine first (it actually works for translation)
+        // Cloud engine currently needs ASR integration — local cascade is functional
+        val localOk = initializeLocalEngine(sourceLang, targetLang)
+
         val useCloud = preferencesManager.useCloud.first()
         val apiKey = preferencesManager.getApiKey()
 
         if (useCloud && apiKey != null && isNetworkAvailable()) {
-            // Try cloud first
-            Log.i(TAG, "Attempting cloud engine initialization")
-            cloudEngine = CloudTranslationEngine(apiKey)
-            val cloudOk = cloudEngine!!.initialize(sourceLang, targetLang)
-
-            if (cloudOk) {
-                activeEngine = cloudEngine
-                _isCloudActive.value = true
-                _activeEngineName.value = cloudEngine!!.engineName
-                Log.i(TAG, "Cloud engine active")
-
-                // Also prepare local engine as fallback (in background)
-                prepareLocalFallback(sourceLang, targetLang)
-                return true
-            } else {
-                Log.w(TAG, "Cloud init failed, falling back to local")
-                cloudEngine?.release()
-                cloudEngine = null
-            }
+            // Prepare cloud engine in background (for text translation via OpenRouter)
+            // But keep local as active engine since cloud needs ASR integration
+            Log.i(TAG, "Preparing cloud engine (OpenRouter) in background")
+            cloudEngine = CloudTranslationEngine(context, apiKey)
+            cloudEngine!!.initialize(sourceLang, targetLang)
+            // Cloud engine is available for switchToCloud() when ASR is integrated
         }
 
-        // Use local engine
-        return initializeLocalEngine(sourceLang, targetLang)
+        return localOk
     }
 
     /**
@@ -109,45 +102,51 @@ class TranslationManager(
      * 2. Fall back to Cascade Whisper+NLLB+TTS (always works if models downloaded)
      */
     private suspend fun initializeLocalEngine(sourceLang: String, targetLang: String): Boolean {
-        // Try SeamlessStreaming first
-        Log.i(TAG, "Trying SeamlessStreaming local engine...")
-        val modelLoader = SeamlessModelLoader(context)
-        val seamlessEngine = LocalTranslationEngine(context, modelLoader)
-        val seamlessOk = seamlessEngine.initialize(sourceLang, targetLang)
+        // Priority 1: Sherpa-ONNX offline S2S
+        val sherpaModels = com.earflows.app.model.SherpaModelManager(context)
 
-        if (seamlessOk) {
-            localEngine = seamlessEngine
-            activeEngine = seamlessEngine
-            _isCloudActive.value = false
-            _activeEngineName.value = seamlessEngine.engineName
-            Log.i(TAG, "SeamlessStreaming local engine active")
-            return true
+        // Auto-download if not ready
+        val needsDownload = !sherpaModels.isAsrReady() || !sherpaModels.isWhisperReady()
+        if (needsDownload) {
+            Log.i(TAG, "Sherpa models missing, downloading...")
+            _activeEngineName.value = "Downloading models..."
+            val dlOk = sherpaModels.downloadAll()
+            if (!dlOk) Log.w(TAG, "Sherpa download failed, will use cloud fallback")
         }
 
-        // Fallback to Cascade pipeline
-        Log.i(TAG, "SeamlessStreaming not available, trying Cascade engine (Whisper+NLLB+TTS)...")
-        seamlessEngine.release()
-
-        if (!modelDownloadManager.areModelsReady()) {
-            Log.w(TAG, "Cascade models not downloaded yet. Need: ${modelDownloadManager.getMissingDownloadSizeMb()}MB")
-            _activeEngineName.value = "Models needed (${modelDownloadManager.getMissingDownloadSizeMb()}MB)"
-            return false
+        if (sherpaModels.isAsrReady() || sherpaModels.isWhisperReady()) {
+            Log.i(TAG, "Trying Sherpa offline S2S engine...")
+            val sherpaEngine = SherpaS2SEngine(context, forceBtMic, sherpaModels)
+            val ok = sherpaEngine.initialize(sourceLang, targetLang)
+            if (ok) {
+                localEngine = sherpaEngine
+                activeEngine = sherpaEngine
+                _isCloudActive.value = false
+                _activeEngineName.value = sherpaEngine.engineName
+                Log.i(TAG, "Sherpa offline S2S active")
+                return true
+            }
+            Log.w(TAG, "Sherpa init failed, falling back to cloud")
         }
 
-        val cascadeEngine = CascadeTranslationEngine(context, modelDownloadManager)
-        val cascadeOk = cascadeEngine.initialize(sourceLang, targetLang)
-
-        if (cascadeOk) {
-            localEngine = cascadeEngine
-            activeEngine = cascadeEngine
-            _isCloudActive.value = false
-            _activeEngineName.value = cascadeEngine.engineName
-            Log.i(TAG, "Cascade engine active (Whisper+NLLB+TTS)")
-            return true
+        // Priority 2: RealtimeTranslationEngine (Gemini cloud SSE)
+        val apiKey = preferencesManager.getApiKey()
+        if (apiKey != null) {
+            Log.i(TAG, "Initializing Realtime cloud engine (OpenRouter + SSE)...")
+            val realtimeEngine = RealtimeTranslationEngine(context, apiKey)
+            val ok = realtimeEngine.initialize(sourceLang, targetLang)
+            if (ok) {
+                localEngine = realtimeEngine
+                activeEngine = realtimeEngine
+                _isCloudActive.value = true
+                _activeEngineName.value = realtimeEngine.engineName
+                Log.i(TAG, "Realtime cloud engine active: ${realtimeEngine.engineName}")
+                return true
+            }
         }
 
-        Log.e(TAG, "All local engines failed to initialize")
-        _activeEngineName.value = "No engine available"
+        Log.e(TAG, "No engine available (no sherpa models, no API key)")
+        _activeEngineName.value = "No engine"
         return false
     }
 
@@ -202,7 +201,7 @@ class TranslationManager(
         if (!isNetworkAvailable()) return false
 
         cloudEngine?.release()
-        cloudEngine = CloudTranslationEngine(apiKey)
+        cloudEngine = CloudTranslationEngine(context, apiKey)
         val ok = cloudEngine!!.initialize(sourceLang, targetLang)
 
         if (ok) {
@@ -244,6 +243,18 @@ class TranslationManager(
         val network = cm.activeNetwork ?: return false
         val capabilities = cm.getNetworkCapabilities(network) ?: return false
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /** Raw audio chunks for parallel recording */
+    fun getRawAudioStream(): Flow<ByteArray>? {
+        return (activeEngine as? RealtimeTranslationEngine)?.rawAudioChunks
+            ?: (localEngine as? RealtimeTranslationEngine)?.rawAudioChunks
+    }
+
+    /** Expose debug state from RealtimeTranslationEngine for UI visualization */
+    fun getRealtimeDebugState(): kotlinx.coroutines.flow.StateFlow<RealtimeTranslationEngine.PipelineDebugState>? {
+        return (activeEngine as? RealtimeTranslationEngine)?.debugState
+            ?: (localEngine as? RealtimeTranslationEngine)?.debugState
     }
 
     suspend fun release() {

@@ -41,6 +41,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _engineName = MutableStateFlow("—")
     val engineName = _engineName.asStateFlow()
 
+    // Debug state from realtime engine
+    private val _debugState = MutableStateFlow(com.earflows.app.translation.RealtimeTranslationEngine.PipelineDebugState())
+    val debugState = _debugState.asStateFlow()
+
+    // Conversation mode
+    private val _isReplyMode = MutableStateFlow(false)
+    val isReplyMode = _isReplyMode.asStateFlow()
+
+    // Mic source: false = phone mic, true = BT mic (independent of reply mode)
+    private val _useBtMic = MutableStateFlow(false)
+    val useBtMic = _useBtMic.asStateFlow()
+
     val useCloud = prefs.useCloud.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     val sourceLang = prefs.sourceLang.stateIn(viewModelScope, SharingStarted.Eagerly, "tha")
     val targetLang = prefs.targetLang.stateIn(viewModelScope, SharingStarted.Eagerly, "fra")
@@ -79,13 +91,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _engineName.value = it
             }
         }
+        // Observe debug state from realtime engine
+        viewModelScope.launch {
+            svc.translationManagerRef?.getRealtimeDebugState()?.collect {
+                _debugState.value = it
+            }
+        }
+        // Observe reply mode
+        viewModelScope.launch {
+            svc.isReplyMode.collect { _isReplyMode.value = it }
+        }
+    }
+
+    fun setReplyMode(enabled: Boolean) {
+        service?.setReplyMode(enabled)
+    }
+
+    fun setUseBtMic(useBt: Boolean) {
+        _useBtMic.value = useBt
+        service?.setMicSource(useBt)
     }
 
     fun startService() {
         val context = getApplication<Application>()
         val intent = Intent(context, EarFlowsForegroundService::class.java)
         context.startForegroundService(intent)
+        // Bind with AUTO_CREATE after starting foreground service
         context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+    }
+
+    fun ensureBound() {
+        if (!isBound) {
+            val context = getApplication<Application>()
+            val intent = Intent(context, EarFlowsForegroundService::class.java)
+            context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        }
     }
 
     fun stopService() {
@@ -110,9 +150,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun bindToExistingService() {
+        // Only bind if the service is already running — don't create it prematurely
+        // BIND_AUTO_CREATE would start the service + trigger startForeground timeout
         val context = getApplication<Application>()
         val intent = Intent(context, EarFlowsForegroundService::class.java)
-        context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        context.bindService(intent, connection, 0) // 0 = don't auto-create
     }
 
     override fun onCleared() {

@@ -16,6 +16,8 @@ class ModelSetupViewModel(application: Application) : AndroidViewModel(applicati
     val downloadState = downloadManager.downloadState
     val downloadProgress = downloadManager.downloadProgress
     val currentModelName = downloadManager.currentModelName
+    val errorMessage = downloadManager.errorMessage
+    val downloadLog = downloadManager.downloadLog
 
     private val _missingModels = MutableStateFlow(downloadManager.getMissingModels())
     val missingModels = _missingModels.asStateFlow()

@@ -76,13 +76,18 @@ class PreferencesManager(private val context: Context) {
         )
     }
 
-    fun getApiKey(): String? = encryptedPrefs.getString("openai_api_key", null)
+    fun getApiKey(): String? =
+        encryptedPrefs.getString("cloud_api_key", null)
+            ?: encryptedPrefs.getString("openai_api_key", null)  // Migration from old key
 
     fun setApiKey(key: String) {
-        encryptedPrefs.edit().putString("openai_api_key", key).apply()
+        encryptedPrefs.edit().putString("cloud_api_key", key).apply()
     }
 
     fun clearApiKey() {
-        encryptedPrefs.edit().remove("openai_api_key").apply()
+        encryptedPrefs.edit()
+            .remove("cloud_api_key")
+            .remove("openai_api_key")  // Clean old key too
+            .apply()
     }
 }

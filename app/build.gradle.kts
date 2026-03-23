@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -53,6 +54,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            // Sherpa-onnx bundles libonnxruntime.so — pick first on conflict
+            pickFirsts += "**/*.so"
+        }
     }
 }
 
@@ -77,8 +82,15 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // ONNX Runtime for on-device ML (SeamlessStreaming)
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
+    // ONNX Runtime Java API (for legacy engines — SeamlessModel, SileroVAD)
+    // Exclude native libs because sherpa-onnx bundles its own libonnxruntime.so
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2") {
+        exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-shared")
+    }
+
+    // Sherpa-ONNX — on-device streaming ASR + VAD + TTS (C++ JNI bindings)
+    // Full AAR from official releases — bundles libonnxruntime.so + JNI libs
+    implementation(files("libs/sherpa-onnx-android.aar"))
 
     // OkHttp + WebSocket for cloud streaming (OpenAI Realtime API)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

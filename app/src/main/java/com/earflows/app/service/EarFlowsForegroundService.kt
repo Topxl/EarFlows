@@ -81,6 +81,15 @@ class EarFlowsForegroundService : Service() {
     val isPaused = _isPaused.asStateFlow()
 
     private val _vadActive = MutableStateFlow(false)
+
+    // Conversation mode
+    private lateinit var conversationModeManager: com.earflows.app.audio.ConversationModeManager
+    private val _isReplyMode = MutableStateFlow(false)
+    val isReplyMode = _isReplyMode.asStateFlow()
+
+    // Mic source override (independent of reply mode)
+    private val _useBtMic = MutableStateFlow(false)
+    val useBtMic = _useBtMic.asStateFlow()
     val vadActive = _vadActive.asStateFlow()
 
     private val _latencyMs = MutableStateFlow(0L)
@@ -114,9 +123,12 @@ class EarFlowsForegroundService : Service() {
         playbackManager = AudioPlaybackManager()
         recordingManager = AudioRecordingManager(applicationContext)
         bluetoothManager = BluetoothAudioManager(applicationContext)
+        conversationModeManager = com.earflows.app.audio.ConversationModeManager(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand: action=${intent?.action}, state=${_serviceState.value}")
+
         when (intent?.action) {
             Constants.SERVICE_STOP_ACTION -> {
                 stopEarFlows()
@@ -134,8 +146,11 @@ class EarFlowsForegroundService : Service() {
 
         // Normal start
         if (_serviceState.value == ServiceState.STOPPED) {
+            Log.i(TAG, "Starting foreground + pipeline...")
             startForegroundWithNotification()
             serviceScope.launch { startEarFlows() }
+        } else {
+            Log.i(TAG, "Already running, ignoring start (state=${_serviceState.value})")
         }
 
         return START_STICKY
@@ -159,18 +174,11 @@ class EarFlowsForegroundService : Service() {
         // 1. Acquire partial wake lock (keep CPU alive for background processing)
         acquireWakeLock()
 
-        // 2. Initialize audio capture
-        if (!audioCapture.initialize()) {
-            Log.e(TAG, "Audio capture init failed")
-            _serviceState.value = ServiceState.ERROR
-            return
-        }
+        // 2. AudioRecord + VAD are NOT used — SpeechRecognizer handles mic directly
+        // This avoids mic conflict and is faster (no intermediate buffering)
+        Log.i(TAG, "Using SpeechRecognizer mode (no AudioRecord)")
 
-        // 3. Initialize VAD (non-critical — falls back to always-on)
-        val vadOk = vadDetector.initialize()
-        Log.i(TAG, "VAD initialized: $vadOk (fallback=always-on if false)")
-
-        // 4. Initialize translation engine
+        // 3. Initialize translation engine
         val sourceLang = preferencesManager.sourceLang.first()
         val targetLang = preferencesManager.targetLang.first()
         val splitChannel = preferencesManager.splitChannel.first()
@@ -214,44 +222,28 @@ class EarFlowsForegroundService : Service() {
      * Captures audio → VAD → Translation → Playback, all streaming.
      */
     private fun startAudioPipeline() {
-        // Job 1: Capture audio and process through VAD + translation
+        // RealtimeTranslationEngine uses Android SpeechRecognizer which has its own mic access.
+        // We must NOT use AudioRecord simultaneously — it would conflict.
+        // Instead, just trigger feedAudioChunk once to start the SpeechRecognizer.
+
+        Log.i(TAG, "Starting realtime pipeline")
+
+        // Trigger the realtime engine to start
         captureJob = serviceScope.launch(Dispatchers.IO) {
-            // Launch capture (blocking coroutine that reads mic)
-            launch { audioCapture.startCapture() }
-
-            // Process audio chunks as they arrive
-            var timestampMs = 0L
-            audioCapture.audioChunks.collect { chunk ->
-                if (_isPaused.value) return@collect
-
-                timestampMs += (chunk.size * 1000L / Constants.SAMPLE_RATE)
-
-                // VAD: check if speech is present
-                val vadResult = vadDetector.processChunk(chunk, timestampMs)
-                _vadActive.value = vadResult.isSpeech
-
-                if (vadResult.isSpeech) {
-                    // Feed speech to translation engine
-                    val feedStart = System.currentTimeMillis()
-                    translationManager.feedAudioChunk(chunk)
-                    _latencyMs.value = System.currentTimeMillis() - feedStart
-                } else if (vadResult.transitioned && !vadResult.isSpeech) {
-                    // Speech just ended → flush translation segment
-                    translationManager.flushSegment()
-                }
-            }
+            translationManager.feedAudioChunk(ShortArray(0))
+            _vadActive.value = true
         }
 
-        // Job 2: Collect raw audio for recording (parallel, always active)
+        // Job: Record raw audio in parallel (WAV segments)
         serviceScope.launch(Dispatchers.IO) {
-            audioCapture.rawBytesChunks.collect { bytes ->
+            translationManager.getRawAudioStream()?.collect { bytes ->
                 if (!_isPaused.value) {
                     recordingManager.writeChunk(bytes)
                 }
             }
         }
 
-        // Job 3: Collect translated audio and play it
+        // Job: Collect translated audio for recording/playback
         translationOutputJob = serviceScope.launch(Dispatchers.IO) {
             translationManager.translatedAudioStream.collect { translatedChunk ->
                 if (!_isPaused.value && translatedChunk.pcmData.isNotEmpty()) {
@@ -316,17 +308,21 @@ class EarFlowsForegroundService : Service() {
             val sourceLang = preferencesManager.sourceLang.first()
             val targetLang = preferencesManager.targetLang.first()
 
-            val ok = if (useCloud) {
-                translationManager.switchToCloud(sourceLang, targetLang)
-            } else {
-                translationManager.switchToLocal(sourceLang, targetLang)
+            // Cloud engine doesn't have integrated ASR yet — force local for now
+            // TODO: Enable cloud switching once ASR → OpenRouter pipeline is integrated
+            if (useCloud) {
+                Log.i(TAG, "Cloud mode requested but not yet functional — keeping local engine")
+                preferencesManager.setUseCloud(false)
+                return@launch
             }
 
+            val ok = translationManager.switchToLocal(sourceLang, targetLang)
+
             if (ok) {
-                preferencesManager.setUseCloud(useCloud)
+                preferencesManager.setUseCloud(false)
                 updateNotification()
             }
-            Log.i(TAG, "Engine switch to ${if (useCloud) "cloud" else "local"}: $ok")
+            Log.i(TAG, "Engine switch to local: $ok")
         }
     }
 
@@ -345,6 +341,110 @@ class EarFlowsForegroundService : Service() {
             )
         } else {
             startForeground(Constants.NOTIFICATION_ID, notification)
+        }
+    }
+
+    // ========================================================================
+    // ========================================================================
+    // MIC SOURCE — independent of reply mode
+    // ========================================================================
+
+    /**
+     * Switch mic source without changing translation direction.
+     * Restarts the engine with the new mic source.
+     */
+    fun setMicSource(useBt: Boolean) {
+        _useBtMic.value = useBt
+        translationManager.forceBtMic = useBt
+        Log.i(TAG, "Mic source changed: ${if (useBt) "BT earbuds" else "Phone mic"}")
+
+        // Restart engine to pick up new mic source
+        serviceScope.launch {
+            translationManager.release()
+            kotlinx.coroutines.delay(200)
+
+            val sourceLang = preferencesManager.sourceLang.first()
+            val targetLang = preferencesManager.targetLang.first()
+            val src = if (_isReplyMode.value) targetLang else sourceLang
+            val tgt = if (_isReplyMode.value) sourceLang else targetLang
+            translationManager.initialize(src, tgt)
+            translationManager.feedAudioChunk(ShortArray(0))
+            Log.i(TAG, "Engine restarted with mic: ${if (useBt) "BT" else "phone"}")
+        }
+    }
+
+    // ========================================================================
+    // CONVERSATION MODE — switch between ambient and reply
+    // ========================================================================
+
+    /**
+     * Toggle reply mode:
+     * - OFF (ambient): phone mic → Thai ASR → French TTS → BT earbuds
+     * - ON (reply): BT mic → French ASR → Thai TTS → phone speaker
+     */
+    fun setReplyMode(enabled: Boolean) {
+        _isReplyMode.value = enabled
+        val audioMgr = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+
+        serviceScope.launch {
+            val sourceLang = preferencesManager.sourceLang.first()
+            val targetLang = preferencesManager.targetLang.first()
+
+            // 1. Stop current engine
+            translationManager.release()
+            Log.i(TAG, "Engine stopped for mode switch")
+
+            // 2. Set audio routing
+            if (enabled) {
+                // Open a VOICE_COMMUNICATION AudioRecord FIRST — this enables SCO/routing controls
+                try {
+                    val tempRec = android.media.AudioRecord(
+                        android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                        16000, android.media.AudioFormat.CHANNEL_IN_MONO,
+                        android.media.AudioFormat.ENCODING_PCM_16BIT, 3200
+                    )
+                    if (tempRec.state == android.media.AudioRecord.STATE_INITIALIZED) {
+                        tempRec.startRecording()
+                        // NOW the mode change will work
+                        audioMgr.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+                        audioMgr.isSpeakerphoneOn = true
+                        kotlinx.coroutines.delay(300)
+                        tempRec.stop()
+                        tempRec.release()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "SCO trick failed: ${e.message}")
+                }
+                Log.i(TAG, "REPLY routing set: mode=${audioMgr.mode}, speaker=${audioMgr.isSpeakerphoneOn}")
+            } else {
+                audioMgr.isSpeakerphoneOn = false
+                audioMgr.mode = android.media.AudioManager.MODE_NORMAL
+                Log.i(TAG, "AMBIENT routing set: mode=${audioMgr.mode}, speaker=${audioMgr.isSpeakerphoneOn}")
+            }
+
+            kotlinx.coroutines.delay(300)
+
+            // 3. Re-init engine
+            val src = if (enabled) targetLang else sourceLang
+            val tgt = if (enabled) sourceLang else targetLang
+            translationManager.initialize(src, tgt)
+
+            // 4. If reply mode, force TTS output to speaker via setCommunicationDevice
+            if (enabled && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val speaker = audioMgr.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+                    .firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (speaker != null) {
+                    audioMgr.setCommunicationDevice(speaker)
+                    Log.i(TAG, "setCommunicationDevice → SPEAKER: ${speaker.productName}")
+                }
+            } else if (!enabled && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                audioMgr.clearCommunicationDevice()
+                Log.i(TAG, "clearCommunicationDevice → back to BT")
+            }
+
+            // 5. Start pipeline
+            translationManager.feedAudioChunk(ShortArray(0))
+            Log.i(TAG, "Engine restarted: $src → $tgt (reply=$enabled, speaker=${audioMgr.isSpeakerphoneOn})")
         }
     }
 

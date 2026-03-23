@@ -7,15 +7,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.SpatialAudio
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -26,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -50,7 +56,8 @@ import com.earflows.app.viewmodel.SettingsViewModel
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigateToModelSetup: () -> Unit = {}
 ) {
     val sourceLang by viewModel.sourceLang.collectAsState()
     val targetLang by viewModel.targetLang.collectAsState()
@@ -58,6 +65,9 @@ fun SettingsScreen(
     val recordTranslation by viewModel.recordTranslation.collectAsState()
     val outputVolume by viewModel.outputVolume.collectAsState()
     val hasApiKey by viewModel.hasApiKey.collectAsState()
+    val modelsReady by viewModel.modelsReady.collectAsState()
+    val missingModelCount by viewModel.missingModelCount.collectAsState()
+    val missingSizeMb by viewModel.missingSizeMb.collectAsState()
 
     Scaffold(
         topBar = {
@@ -78,6 +88,58 @@ fun SettingsScreen(
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
+            // --- Models ---
+            SectionHeader(icon = { Icon(Icons.Default.Storage, null) }, title = "Modeles offline")
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (modelsReady) Icons.Default.CheckCircle else Icons.Default.CloudDownload,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = if (modelsReady) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (modelsReady) "Modeles prets (mode offline disponible)"
+                                   else "$missingModelCount modele(s) manquant(s) (~${missingSizeMb}MB)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (modelsReady) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (!modelsReady) {
+                        Button(
+                            onClick = onNavigateToModelSetup,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.CloudDownload, null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Telecharger les modeles")
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onNavigateToModelSetup,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Gerer les modeles")
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // --- Languages ---
             SectionHeader(icon = { Icon(Icons.Default.Language, null) }, title = "Langues")
 
@@ -99,7 +161,6 @@ fun SettingsScreen(
             SectionHeader(icon = { Icon(Icons.Default.VolumeUp, null) }, title = "Audio")
 
             SettingsCard {
-                // Volume slider
                 Text("Volume sortie traduction", style = MaterialTheme.typography.bodyMedium)
                 var sliderVolume by remember { mutableFloatStateOf(outputVolume) }
                 Slider(
@@ -141,18 +202,24 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // --- Cloud API ---
-            SectionHeader(icon = { Icon(Icons.Default.Key, null) }, title = "API Cloud")
+            // --- Cloud API (OpenRouter) ---
+            SectionHeader(icon = { Icon(Icons.Default.Key, null) }, title = "API Cloud (OpenRouter)")
 
             SettingsCard {
-                Text("Cle API OpenAI", style = MaterialTheme.typography.bodyMedium)
+                Text("Cle API OpenRouter", style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Obtenez une cle gratuite sur openrouter.ai",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(modifier = Modifier.height(8.dp))
 
                 var apiKeyInput by remember { mutableStateOf("") }
                 OutlinedTextField(
                     value = apiKeyInput,
                     onValueChange = { apiKeyInput = it },
-                    placeholder = { Text(if (hasApiKey) "********" else "sk-...") },
+                    placeholder = { Text(if (hasApiKey) "********" else "sk-or-...") },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -161,7 +228,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Row {
-                    androidx.compose.material3.Button(
+                    Button(
                         onClick = {
                             if (apiKeyInput.isNotBlank()) {
                                 viewModel.setApiKey(apiKeyInput)
@@ -175,7 +242,7 @@ fun SettingsScreen(
 
                     if (hasApiKey) {
                         Spacer(modifier = Modifier.width(8.dp))
-                        androidx.compose.material3.OutlinedButton(
+                        OutlinedButton(
                             onClick = { viewModel.clearApiKey() }
                         ) {
                             Text("Supprimer")
@@ -185,9 +252,11 @@ fun SettingsScreen(
 
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = if (hasApiKey) "Cle API configuree (stockage chiffre)" else "Aucune cle configuree",
+                    text = if (hasApiKey) "Cle API configuree (stockage chiffre)"
+                           else "Aucune cle configuree — mode offline uniquement",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (hasApiKey) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (hasApiKey) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 

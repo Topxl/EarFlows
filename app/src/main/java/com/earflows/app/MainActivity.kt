@@ -67,10 +67,7 @@ class MainActivity : ComponentActivity() {
             permissionLauncher.launch(requiredPermissions)
         }
 
-        // Check if models are already downloaded
-        val modelsReady = ModelDownloadManager(applicationContext).areModelsReady()
-        val startDestination = if (modelsReady) "home" else "model_setup"
-
+        // Always start at home — model setup is available from settings
         setContent {
             EarFlowsTheme {
                 Surface(
@@ -79,32 +76,46 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val navController = rememberNavController()
 
-                    NavHost(navController = navController, startDestination = startDestination) {
-                        composable("model_setup") {
-                            ModelSetupScreen(
-                                viewModel = modelSetupViewModel,
-                                onComplete = {
-                                    navController.navigate("home") {
-                                        popUpTo("model_setup") { inclusive = true }
-                                    }
-                                },
-                                onSkip = {
-                                    navController.navigate("home") {
-                                        popUpTo("model_setup") { inclusive = true }
-                                    }
-                                }
-                            )
-                        }
+                    NavHost(navController = navController, startDestination = "home") {
                         composable("home") {
                             HomeScreen(
                                 viewModel = mainViewModel,
-                                onNavigateToSettings = { navController.navigate("settings") }
+                                onNavigateToSettings = { navController.navigate("settings") },
+                                onNavigateToDebug = { navController.navigate("debug") }
+                            )
+                        }
+                        composable("debug") {
+                            com.earflows.app.ui.screens.DebugScreen(
+                                viewModel = mainViewModel,
+                                onBack = { navController.popBackStack() },
+                                onNavigateToTests = { navController.navigate("tests") }
+                            )
+                        }
+                        composable("tests") {
+                            com.earflows.app.ui.screens.TestScreen(
+                                onBack = { navController.popBackStack() }
                             )
                         }
                         composable("settings") {
                             SettingsScreen(
                                 viewModel = settingsViewModel,
-                                onBack = { navController.popBackStack() }
+                                onBack = { navController.popBackStack() },
+                                onNavigateToModelSetup = {
+                                    navController.navigate("model_setup")
+                                }
+                            )
+                        }
+                        composable("model_setup") {
+                            ModelSetupScreen(
+                                viewModel = modelSetupViewModel,
+                                onComplete = {
+                                    // Refresh model state in settings and go back
+                                    settingsViewModel.refreshModelState()
+                                    navController.popBackStack()
+                                },
+                                onSkip = {
+                                    navController.popBackStack()
+                                }
                             )
                         }
                     }
@@ -115,7 +126,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Re-bind to service if it's running
         mainViewModel.bindToExistingService()
     }
 }

@@ -24,9 +24,10 @@ object Constants {
     const val DEFAULT_SOURCE_DISPLAY = "Thaï"
     const val DEFAULT_TARGET_DISPLAY = "Français"
 
-    // Cloud
-    const val OPENAI_REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
-    const val CLOUD_TIMEOUT_MS = 5_000L
+    // Cloud — OpenRouter (compatible OpenAI chat completions)
+    const val OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+    const val OPENROUTER_DEFAULT_MODEL = "google/gemini-2.0-flash-001"  // Fast + cheap
+    const val CLOUD_TIMEOUT_MS = 10_000L
     const val CLOUD_RECONNECT_DELAY_MS = 3_000L
 
     // Notification

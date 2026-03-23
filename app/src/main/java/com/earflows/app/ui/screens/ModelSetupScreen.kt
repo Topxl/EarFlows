@@ -51,6 +51,7 @@ fun ModelSetupScreen(
     val missingModels by viewModel.missingModels.collectAsState()
     val totalSizeMb by viewModel.totalSizeMb.collectAsState()
     val modelsReady by viewModel.modelsReady.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
 
     if (modelsReady) {
         onComplete()
@@ -201,12 +202,37 @@ fun ModelSetupScreen(
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.error
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    "Verifiez votre connexion internet et reessayez.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Show detailed error + full log
+                val fullLog by viewModel.downloadLog.collectAsState()
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = if (errorMessage.isNotBlank()) errorMessage
+                                   else "Erreur inconnue",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        if (fullLog.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = fullLog,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 15
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Button(

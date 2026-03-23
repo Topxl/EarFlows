@@ -5,7 +5,7 @@
     <string name="notification_channel_description">Notification permanente pendant l\'écoute et la traduction</string>
     <string name="notification_title">EarFlows – Écoute et traduction active</string>
     <string name="notification_text_local">Mode local (offline) • Thaï → Français</string>
-    <string name="notification_text_cloud">Mode cloud (ultra-rapide) • Thaï → Français</string>
+    <string name="notification_text_cloud">Mode cloud (OpenRouter) • Thaï → Français</string>
     <string name="action_pause">Pause</string>
     <string name="action_stop">Arrêter</string>
     <string name="action_resume">Reprendre</string>
